@@ -10,6 +10,7 @@ import subprocess
 import sys
 import time
 import venv
+from monitoring import start as start_monitor, stop as stop_monitor, health as monitor_health
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,7 +90,7 @@ def clean_env(config):
         env.pop(key, None)
     env.update(AZURE_OPENAI_ENDPOINT=config['openAiEndpoint'],
                AZURE_OPENAI_DEPLOYMENT=config['chatDeployment'],
-               AZURE_OPENAI_USE_ENTRA='1', OPENAI_API_VERSION='2024-10-21')
+               AZURE_OPENAI_USE_ENTRA='1', OPENAI_API_VERSION='2024-10-21', AGENT_TELEMETRY_STDOUT='0')
     return env
 
 
@@ -101,38 +102,32 @@ def start_apps(config, directory, repos):
     project_step('ops', lambda: run(['pwsh', '-NoProfile', '-File', ROOT / 'scripts/adapters/ops.ps1',
                                     '-Repo', repos['ops'], '-Config', config_file]) or
                  'Kubernetes rollouts ready; no faults injected', reports / 'ops')
+    project_step('monitor', lambda: start_monitor(config, directory, python_for(repos['monitor'], 'monitor'),
+                                                 ROOT / 'monitor-policy.json', run), reports / 'monitor')
     project_step('rag', lambda: run([python_for(repos['rag'], 'rag'), ROOT / 'scripts/adapters/rag.py', '--repo', repos['rag'],
-                                    '--config', config_file], env={**clean_env(config), 'PLATFORM_RAG_REPORT': str(reports / 'rag' / 'answer.txt')}) or
+                                    '--config', config_file], env={**clean_env(config), 'PLATFORM_RAG_REPORT': str(reports / 'rag' / 'answer.txt'),
+                                     'AGENT_TELEMETRY_FILE': str(directory / 'telemetry/rag.jsonl')}) or
                  'Agent deployed and live question completed; inspect answer evidence', reports / 'rag')
     def ci():
         ci_python = python_for(repos['ci'], 'ci')
         thread = f"platform-{time.time_ns()}"
         run([ci_python, '-m', 'ci_repair.cli', 'run', '--mode', 'azure', '--scenario', 'S01',
-             '--thread', thread, '--output', reports / 'ci'], cwd=repos['ci'], env=clean_env(config))
+             '--thread', thread, '--output', reports / 'ci'], cwd=repos['ci'], env={**clean_env(config), 'AGENT_TELEMETRY_FILE': str(directory / 'telemetry/ci.jsonl')})
         evidence = json.loads((reports / 'ci' / thread / 'evidence.json').read_text())
         if evidence['status'] != 'awaiting_approval':
             raise RuntimeError('CI live run did not reach human approval')
         return {'status': 'awaiting_approval', 'thread': thread, 'humanApprovalPreserved': True}
     project_step('ci', ci, reports / 'ci')
-    # Current monitor is an offline JSONL consumer, not a long-running service.
-    # Use actual CI outcome telemetry; never present synthetic eval as live monitoring.
-    def monitor():
-        monitor_python = python_for(repos['monitor'], 'monitor')
-        sys.path.insert(0, str(ROOT / 'scripts/adapters'))
-        from telemetry import ci_events
-        events = ci_events(reports / 'ci')
-        telemetry = reports / 'monitor' / 'events.jsonl'
-        telemetry.parent.mkdir(parents=True, exist_ok=True)
-        telemetry.write_text(''.join(json.dumps(e) + '\n' for e in events))
-        result = subprocess.run([str(monitor_python), '-m', 'agent_monitor', 'analyze', str(telemetry), '--policy',
-                                 str(ROOT / 'monitor-policy.json'), '--json'], cwd=repos['monitor'],
-                                text=True, capture_output=True)
-        (reports / 'monitor' / 'findings.json').write_text(result.stdout + '\n')
-        if result.returncode != 0:
-            raise RuntimeError('Monitor reported high/critical findings or analysis failed; inspect its report')
-        return {'mode': 'batch', 'source': 'actual CI run evidence',
-                'events': len(events), 'continuousMonitoring': False}
-    project_step('monitor', monitor, reports / 'monitor')
+    # Require the running monitor to have consumed both local startup executions.
+    deadline = time.monotonic() + 45
+    while time.monotonic() < deadline:
+        report = monitor_health(directory)
+        if report['status'] != 'watching':
+            raise RuntimeError('Monitor collection degraded; inspect monitor/findings.json')
+        if report['agents']['rag']['events'] and report['agents']['ci-repair']['events']:
+            return
+        time.sleep(1)
+    raise RuntimeError('Monitor did not consume RAG/CI telemetry before startup deadline')
 
 
 def up(args):
@@ -165,28 +160,50 @@ def up(args):
         raise RuntimeError('Full up requires AKS, ACR, AI and RAG enabled. Use deploy.ps1 for infrastructure subsets.')
     start_apps(config, directory, repos)
     write(directory / 'run.json', {'subscriptionId': account['id'], 'resourceGroup': args.group,
-                                 'projects': specs, 'status': 'ready', 'monitorMode': 'batch'})
-    print(f'UP COMPLETE: AKS, RAG, CI awaiting approval, monitor batch. Reports: {directory / "reports"}')
+                                 'projects': specs, 'status': 'ready', 'monitorMode': 'continuous'})
+    print(f'UP COMPLETE: AKS, RAG, CI awaiting approval, monitor watching AKS/RAG/CI. Reports: {directory / "reports"}')
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('action', choices=['up', 'down', 'status'])
+    parser.add_argument('action', choices=['up', 'down', 'status', 'chat', 'ci'])
     parser.add_argument('--group', default='rg-agents-test')
     parser.add_argument('--location', default='westeurope')
     parser.add_argument('--params', default='dev.bicepparam')
     parser.add_argument('--yes', action='store_true')
+    parser.add_argument('--question')
+    parser.add_argument('--scenario', choices=['S01','S02','S03','S04'], default='S01')
     args = parser.parse_args()
     if not all(c.isalnum() or c in '-_' for c in args.group) or not args.group:
         parser.error('Use letters/digits/-/_ for resource group')
     if args.action == 'up':
         up(args)
     elif args.action == 'down':
-        # No background local client is started by up. Cloud runtimes live in this RG.
+        if not args.yes and input(f"Stop monitor and delete platform '{args.group}'? (y/N) ") != 'y':
+            return
+        account = az('account', 'show')
+        directory = ROOT / '.state' / f"{account['id']}-{args.group}"
+        stop_monitor(directory)
         command = ['pwsh', '-NoProfile', '-File', ROOT / 'scripts/teardown.ps1', '-ResourceGroup', args.group]
-        if args.yes:
-            command.append('-Yes')
+        command.append('-Yes')
         run(command)
+    elif args.action in ('chat', 'ci'):
+        account = az('account', 'show')
+        directory = ROOT / '.state' / f"{account['id']}-{args.group}"
+        config = json.loads((directory / 'config.json').read_text())
+        if monitor_health(directory)['status'] != 'watching':
+            raise RuntimeError('Monitor sources are degraded; rerun up before monitored work')
+        name = 'rag' if args.action == 'chat' else 'ci'
+        python = ROOT / '.venvs' / name / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+        env = clean_env(config)
+        env['AGENT_TELEMETRY_FILE'] = str(directory / 'telemetry' / f'{name}.jsonl')
+        if name == 'rag':
+            env.update(json.loads((directory / 'rag-environment.json').read_text()))
+            command = [python, 'chat.py'] + (['--question', args.question] if args.question else [])
+        else:
+            command = [python, '-m', 'ci_repair.cli', 'run', '--mode', 'azure', '--scenario', args.scenario,
+                       '--thread', f"monitored-{time.time_ns()}", '--output', directory / 'reports/ci-sessions']
+        run(command, cwd=ROOT / '.projects' / name, env=env)
     else:
         account = az('account', 'show')
         directory = ROOT / '.state' / f"{account['id']}-{args.group}"
@@ -200,7 +217,11 @@ def main():
         reports = Path(json.loads((directory / 'latest-reports.json').read_text())['path'])
         for name in ('ops', 'rag', 'ci', 'monitor'):
             print((reports / name / 'startup.json').read_text())
-        print('RAG/CI/monitor entries describe their last completed startup, not continuous health.')
+        report = monitor_health(directory)
+        print(json.dumps(report, indent=2))
+        if report['status'] != 'watching' or report['highFindings']:
+            raise RuntimeError('Monitor reports degraded collection or high/critical findings')
+        print('Monitor is continuous. RAG/CI startup reports describe their last application execution.')
 
 
 if __name__ == '__main__':

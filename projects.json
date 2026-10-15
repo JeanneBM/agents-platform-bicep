@@ -1,18 +1,18 @@
 {
   "ops": {
     "repository": "JeanneBM/azure-kubernetes-agentic-ops-eval",
-    "ref": "2d2fe0bf066bf05a335c41df8c3890a4af6a1295"
+    "ref": "1b81b7ca0be635503eff832288ab83f91d221590"
   },
   "rag": {
     "repository": "JeanneBM/azure-foundry-rag-agent",
-    "ref": "555693c81ef7c5a6f5ab9ab543157709825483f1"
+    "ref": "e784999d46513626f142b17288a601da12047827"
   },
   "ci": {
     "repository": "JeanneBM/langgraph-ci-repair-agent",
-    "ref": "fedfc8e23d0d2ae32ac61d920169f4aabce9d548"
+    "ref": "a34bcc96351a908b59fc6ddac3171535890dd14e"
   },
   "monitor": {
     "repository": "JeanneBM/observability-monitor-agent",
-    "ref": "f03ba4c7bd3dcc44e20e3bb3bd31adb4d1d0cc85"
+    "ref": "69af1d122453b6cc2faa7760d456e3a804825359"
   }
 }

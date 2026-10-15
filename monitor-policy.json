@@ -1,9 +1,40 @@
 {
   "agents": {
+    "diagnostic": {
+      "allowed_tools": [
+        "kubectl_get",
+        "kubectl_events",
+        "kubectl_logs",
+        "remediate"
+      ],
+      "max_tokens_per_run": 20000,
+      "max_tool_repeats": 5
+    },
+    "remediation": {
+      "allowed_tools": [
+        "policy_check",
+        "acr_check",
+        "kubectl_patch",
+        "rollout_status"
+      ],
+      "require_verification": true,
+      "max_tool_repeats": 5
+    },
+    "rag": {
+      "allowed_tools": [
+        "knowledge_base_retrieve"
+      ],
+      "require_citations": true,
+      "max_tokens_per_run": 12000,
+      "max_tool_repeats": 5
+    },
     "ci-repair": {
-      "allowed_tools": [],
-      "require_verification": false,
-      "require_citations": false
+      "allowed_tools": [
+        "policy_check",
+        "fixture_validation",
+        "draft_export"
+      ],
+      "max_tool_repeats": 3
     }
   }
 }

@@ -98,6 +98,9 @@ def main():
         'AGENT_VERSION': '', 'AZURE_CREDENTIAL_MODE': 'cli',
         'DEPLOYMENT_FILE': str(Path(args.config).parent / 'rag-deployment.json'),
     })
+    keys = ('PROJECT_ENDPOINT', 'RAG_MCP_ENDPOINT', 'PROJECT_CONNECTION_NAME', 'MODEL_DEPLOYMENT',
+            'AGENT_NAME', 'AGENT_VERSION', 'AZURE_CREDENTIAL_MODE', 'DEPLOYMENT_FILE')
+    (Path(args.config).parent / 'rag-environment.json').write_text(json.dumps({key: env[key] for key in keys}))
     for key in ('AZURE_CLIENT_ID', 'AZURE_OPENAI_API_KEY'):
         env.pop(key, None)
     subprocess.run([sys.executable, 'create_rag_agent.py'], cwd=ROOT, env=env, check=True)
