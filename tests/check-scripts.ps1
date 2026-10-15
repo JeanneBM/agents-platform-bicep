@@ -22,6 +22,7 @@ try {
     $caught = $false
     try { Invoke-Az account show } catch { $caught = $true }
     if (-not $caught) { throw 'Native CLI error was not propagated.' }
+    $global:LASTEXITCODE = 0 # Expected failing mock must not leak into the CI shell exit status.
     Write-Output 'PASS: deployment argument contract and native failure propagation'
 } finally {
     Remove-Item Function:\az -ErrorAction SilentlyContinue
