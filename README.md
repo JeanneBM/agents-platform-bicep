@@ -4,6 +4,50 @@ A shared Azure test bench for AKS Agentic Ops, Foundry RAG, LangGraph CI Repair
 and the Observability Monitor. Bicep owns infrastructure; application adapters
 reuse those resources. Each source repository retains its independent lab scripts.
 
+## Environment connections
+
+```mermaid
+flowchart TD
+    UP["up.ps1"] --> B["Bicep: shared infrastructure"]
+    UP --> A["Application adapters"]
+    B --> AKS
+    B --> F["Foundry project and models"]
+    B --> S["Azure AI Search"]
+    B --> ACR["ACR: container images"]
+    B --> O["Log Analytics and Application Insights"]
+
+    subgraph AZ["Azure: platform resource group"]
+        ACR -->|"Image pull"| D["Diagnostic agent"]
+        ACR -->|"Image pull"| R["Remediation agent"]
+        subgraph AKS["AKS"]
+            D -->|"Proposal and authenticated handoff"| R
+            R -->|"Policy-controlled patch"| W["Payments test workload"]
+        end
+        D -->|"Model inference"| F
+        F -->|"RAG retrieval via MCP"| S
+    end
+
+    A -->|"Build, deploy, wait for rollouts"| AKS
+    A -->|"Configure and query RAG"| F
+    A --> C["Local LangGraph CI Repair"]
+    C -->|"Model inference"| F
+    C --> H["Human approval gate"]
+    C --> E["CI evidence"]
+    E --> T["Telemetry adapter"]
+    T --> M["Local monitor: batch analysis"]
+    M --> MR["Monitor findings"]
+
+    A --> P["Separate AKS, RAG and CI reports"]
+    DOWN["down.ps1"] --> CLEAN["Delete platform RG and verify cleanup"]
+    CLEAN -.-> AZ
+```
+
+AKS agent nodes live in an Azure-managed node resource group, checked during cleanup.
+The monitor currently consumes **CI evidence only**; no AKS/Foundry monitoring link
+is implied. Log Analytics and Application Insights are provisioned infrastructure;
+application telemetry wiring remains follow-up work. RAG and CI use local clients;
+the Foundry agent and AKS workloads persist in Azure after startup.
+
 ## Up / status / down
 
 Requirements: Python 3.12+, PowerShell 7+, Git, Azure CLI with Bicep, kubectl,
