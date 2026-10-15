@@ -12,8 +12,8 @@ function Kube {
 Invoke-Az aks get-credentials -g $c.resourceGroup -n $c.aksName --file $kubeconfig --overwrite-existing | Out-Null
 $registry = $c.acrLoginServer.Split('.')[0]
 Invoke-Az acr build --registry $registry --image 'agentic-ops:platform' $Repo | Out-Host
-Invoke-Az acr import --name $registry --source docker.io/library/nginx:1.27 --image payments-api:1.4.2 --force | Out-Null
-foreach ($ns in @($c.agentsNamespace, 'payments')) {
+Invoke-Az acr import --name $registry --source docker.io/library/nginx:1.27 --image test-app:1.4.2 --force | Out-Null
+foreach ($ns in @($c.agentsNamespace, 'test-app')) {
     "apiVersion: v1`nkind: Namespace`nmetadata:`n  name: $ns" | & kubectl --kubeconfig $kubeconfig apply -f - | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Namespace apply failed.' }
 }
@@ -28,7 +28,7 @@ foreach ($d in $existing.items) {
 $values = @{
     ACR_LOGIN_SERVER = $c.acrLoginServer
     AGENTIC_OPS_IMAGE = "$($c.acrLoginServer)/agentic-ops:platform"
-    MANAGED_NAMESPACE = 'payments'
+    MANAGED_NAMESPACE = 'test-app'
     AZURE_AI_FOUNDRY_ENDPOINT = $c.openAiEndpoint
     AZURE_AI_FOUNDRY_DEPLOYMENT = $c.chatDeployment
     DIAGNOSTIC_AZURE_CLIENT_ID = $c.diagnosticClientId
@@ -40,10 +40,10 @@ $secret = @{apiVersion='v1'; kind='Secret'; metadata=@{name='agentic-ops-remedia
 $secret | ConvertTo-Json -Depth 8 | & kubectl --kubeconfig $kubeconfig apply -f - | Out-Host
 if ($LASTEXITCODE -ne 0) { throw 'Secret apply failed.' }
 $bytes=$null; $secret=$null
-foreach ($source in @('demo-payments-api.yaml','aks-agentic-ops.yaml')) {
+foreach ($source in @('demo-test-app.yaml','aks-agentic-ops.yaml')) {
     $manifest = Get-Content (Join-Path $Repo "deploy/$source") -Raw
     foreach ($key in $values.Keys) { $manifest = $manifest.Replace(('${'+$key+'}'), [string]$values[$key]) }
-    $manifest = $manifest.Replace('/paymnets-api:1.4.2','/payments-api:1.4.2')
+    $manifest = $manifest.Replace('/tset-app:1.4.2','/test-app:1.4.2')
     # The pinned upstream manifests use these service-account and namespace names.
     $manifest = $manifest.Replace('agentic-ops.svc.cluster.local', "$($c.agentsNamespace).svc.cluster.local")
     $manifest = $manifest.Replace('namespace: agentic-ops', "namespace: $($c.agentsNamespace)")
@@ -58,8 +58,8 @@ foreach ($source in @('demo-payments-api.yaml','aks-agentic-ops.yaml')) {
     $file = Join-Path $work $source
     Set-Content $file $manifest
     Kube apply -f $file | Out-Host
-    if ($source -eq 'demo-payments-api.yaml') {
-        Kube rollout status deployment/payments-api -n payments --timeout=300s | Out-Host
+    if ($source -eq 'demo-test-app.yaml') {
+        Kube rollout status deployment/test-app -n test-app --timeout=300s | Out-Host
     }
 }
 foreach ($role in @('remediation','diagnostic')) {

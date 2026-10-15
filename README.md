@@ -1,5 +1,7 @@
 # Agents Platform — one-command Azure lab
 
+> **Test workload:** `test-app` is a disposable nginx placeholder used only for fault injection and recovery checks. It has no business logic, payment processing, business data or extra backend. `tset-app` is the deliberately misspelled image alias used in the recovery scenario.
+
 A shared Azure test bench for AKS Agentic Ops, Foundry RAG, LangGraph CI Repair
 and the Observability Monitor. Bicep owns infrastructure; application adapters
 reuse those resources. Each source repository retains its independent lab scripts.
@@ -80,7 +82,7 @@ knowledge retrieval APIs, so region/API availability also matters.
 |---|---|
 | Checkout | Fetches the four repositories at immutable commits from `projects.json` into `.projects/` |
 | Bicep | Creates shared AKS, ACR, model deployments, Foundry project, Search, monitoring and identities |
-| AKS Ops | Builds the actual agent image, imports the demo image, deploys a healthy payments workload and both agents; waits for rollouts |
+| AKS Ops | Builds the actual agent image, imports the demo image, deploys a healthy test-app workload and both agents; waits for rollouts |
 | RAG | Indexes the source repo's demo documents, creates the knowledge base/MCP connection and agent version; checks a live grounded answer |
 | LangGraph | Runs real Azure inference for S01; checks that execution stops at human approval |
 | Monitor | Runs the actual monitor CLI in batch mode on telemetry reconstructed from the real CI evidence |

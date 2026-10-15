@@ -1,7 +1,7 @@
 {
   "ops": {
     "repository": "JeanneBM/azure-kubernetes-agentic-ops-eval",
-    "ref": "b84db9c437e0e96ce5c0c3322dd2d28680104530"
+    "ref": "2d2fe0bf066bf05a335c41df8c3890a4af6a1295"
   },
   "rag": {
     "repository": "JeanneBM/azure-foundry-rag-agent",
