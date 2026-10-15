@@ -21,7 +21,7 @@ flowchart TD
         ACR -->|"Image pull"| R["Remediation agent"]
         subgraph AKS["AKS"]
             D -->|"Proposal and authenticated handoff"| R
-            R -->|"Policy-controlled patch"| W["Payments test workload"]
+            R -->|"Policy-controlled patch"| W["Test app"]
         end
         D -->|"Model inference"| F
         F -->|"RAG retrieval via MCP"| S
