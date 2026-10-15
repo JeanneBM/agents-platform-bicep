@@ -1,0 +1,82 @@
+# Kubernetes-side permissions for the two AKS agents. Azure-side identity comes
+# from Bicep (federated credentials); this file limits what they can do inside the cluster.
+# Placeholders are substituted by scripts/deploy.ps1.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __AGENTS_NAMESPACE__
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: __DIAGNOSTIC_SERVICE_ACCOUNT__
+  namespace: __AGENTS_NAMESPACE__
+  annotations:
+    azure.workload.identity/client-id: "__DIAGNOSTIC_CLIENT_ID__"
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: __REMEDIATION_SERVICE_ACCOUNT__
+  namespace: __AGENTS_NAMESPACE__
+  annotations:
+    azure.workload.identity/client-id: "__REMEDIATION_CLIENT_ID__"
+---
+# Diagnostic: read-only, cluster-wide view of workloads.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: agent-diagnostic-readonly
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log", "events", "namespaces"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: agent-diagnostic-readonly
+subjects:
+  - kind: ServiceAccount
+    name: __DIAGNOSTIC_SERVICE_ACCOUNT__
+    namespace: __AGENTS_NAMESPACE__
+roleRef:
+  kind: ClusterRole
+  name: agent-diagnostic-readonly
+  apiGroup: rbac.authorization.k8s.io
+---
+# Remediation: may only read and patch Deployments in the "workloads" namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: workloads
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: agent-remediation
+  namespace: workloads
+rules:
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: agent-remediation
+  namespace: workloads
+subjects:
+  - kind: ServiceAccount
+    name: __REMEDIATION_SERVICE_ACCOUNT__
+    namespace: __AGENTS_NAMESPACE__
+roleRef:
+  kind: Role
+  name: agent-remediation
+  apiGroup: rbac.authorization.k8s.io

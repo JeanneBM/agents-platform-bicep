@@ -65,7 +65,7 @@ Bicep is free; you pay for the resources. The main running costs are the AKS nod
 
 ## Status
 
-- Static review completed; run the included CI to confirm Bicep compilation and PowerShell syntax. No live deployment has been performed.
+- Bicep build and lint passed locally; both parameter files compile. CI also checks PowerShell syntax. No live deployment has been performed.
 - **Not deployed against a real subscription**, so `what-if` and a real deployment may still surface region, quota or API-version issues.
 - The monitor job runs a placeholder image until you push an `agent-monitor` image and set `monitorImage` (+ `monitorImageFromAcr=true`).
 - The monitor currently reads JSONL files; reading telemetry from Log Analytics (what its Reader role is for) is a planned adapter, not built yet.

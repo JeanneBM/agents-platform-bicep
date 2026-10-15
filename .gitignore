@@ -1,0 +1,5 @@
+outputs.json
+*.local.bicepparam
+main.json
+
+.state/
