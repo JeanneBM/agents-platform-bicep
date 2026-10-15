@@ -1,0 +1,9 @@
+{
+  "agents": {
+    "ci-repair": {
+      "allowed_tools": [],
+      "require_verification": false,
+      "require_citations": false
+    }
+  }
+}

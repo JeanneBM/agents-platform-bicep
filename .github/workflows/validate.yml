@@ -21,8 +21,16 @@ jobs:
       - name: Check PowerShell syntax
         shell: pwsh
         run: |
-          Get-ChildItem scripts/*.ps1 | ForEach-Object {
+          Get-ChildItem -Recurse -Filter '*.ps1' | ForEach-Object {
             $parseErrors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($_.FullName, [ref]$null, [ref]$parseErrors) | Out-Null
             if ($parseErrors) { throw ($parseErrors | Out-String) }
           }
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Orchestration tests
+        run: python -m unittest discover -s tests -v
+      - name: PowerShell native-command contracts (offline)
+        shell: pwsh
+        run: ./tests/check-scripts.ps1

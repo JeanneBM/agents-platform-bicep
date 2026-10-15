@@ -1,94 +1,131 @@
-# Agents Platform — Bicep
+# Agents Platform — one-command Azure lab
 
-Infrastructure for a four-agent test bench on Azure, with a switch for every component:
+A shared Azure test bench for AKS Agentic Ops, Foundry RAG, LangGraph CI Repair
+and the Observability Monitor. Bicep owns infrastructure; application adapters
+reuse those resources. Each source repository retains its independent lab scripts.
 
-| Agent | What it needs from this repo |
-|---|---|
-| AKS Agentic Ops | AKS (Workload Identity), ACR, two separate identities (diagnostic = read-only, remediation = narrow), model access |
-| Foundry RAG | Foundry project, Azure AI Search, model + embedding deployments |
-| LangGraph CI Repair | model access only (the workflow itself runs locally) |
-| Observability monitor | Container Apps Job, Log Analytics Reader, **no write rights to anything** |
+## Up / status / down
 
-Shared: Log Analytics + Application Insights. Primary resources sit in one resource group. AKS also creates a managed node resource group; teardown verifies its removal and reports new external Network Watchers.
-
-## Security choices
-
-- **One managed identity per agent**, so permissions are never shared.
-- **Agent model access uses Entra ID.** The AI account has `disableLocalAuth: true`; agents authenticate with Entra ID. Workload Identity federates each AKS service account to exactly one Azure identity.
-- **Monitor has no remediation permissions:** Log Analytics Reader, AcrPull and model inference access for optional triage. Container Apps logging uses a workspace shared key internally.
-- Diagnostic and remediation get registry read access (AcrPull), never push.
-- Kubernetes-side limits are in `k8s/agents-rbac.yaml` (diagnostic: read-only; remediation: patch Deployments in one namespace).
-
-## Layout
-
-```
-main.bicep            wiring + switches + outputs
-modules/              monitoring, identity, acr, ai, search, aks, federation, monitor-job
-dev.bicepparam        everything on
-minimal.bicepparam    shared + models + monitor; no AKS, no Search
-k8s/agents-rbac.yaml  in-cluster RBAC and service accounts
-scripts/              deploy.ps1 (what-if, confirm, apply), teardown.ps1
-```
-
-## Deploy
+Requirements: Python 3.12+, PowerShell 7+, Git, Azure CLI with Bicep, kubectl,
+an Azure login and permission to deploy resources, build images in ACR and assign roles.
+Docker is not required locally: image builds run in ACR.
 
 ```powershell
 az login
-./scripts/deploy.ps1 -ResourceGroup rg-agents-test -Location westeurope                 # everything
-./scripts/deploy.ps1 -ResourceGroup rg-agents-min  -ParamFile minimal.bicepparam        # cheap
+az account set --subscription YOUR_SUBSCRIPTION_ID
+./up.ps1 -Yes
+./status.ps1
+./down.ps1 -Yes
 ```
 
-Or by hand:
+For a different dedicated resource group/region:
 
-```bash
-az group create -n rg-agents-test -l westeurope --tags workload=agents-test
-az deployment group what-if -g rg-agents-test -p dev.bicepparam
-az deployment group create  -g rg-agents-test -p dev.bicepparam
+```powershell
+./up.ps1 -ResourceGroup rg-agents-demo -Location westeurope -Yes
+./down.ps1 -ResourceGroup rg-agents-demo -Yes
 ```
 
-Switch single components with `--parameters deployAks=false deployRag=false`.
-Outputs (endpoints, client IDs) are what your agents' `.env` files and manifests need.
+`-Yes` skips the confirmation prompt. Without it, deployment shows what-if and
+asks before applying. Region/model quotas can still reject a deployment. Set model
+and VM parameters in `dev.bicepparam` before the first run. RAG uses preview Search
+knowledge retrieval APIs, so region/API availability also matters.
 
-Tear down: `./scripts/teardown.ps1 -ResourceGroup rg-agents-test`.
+## What one up does
 
-## Cost
+| Step | Result |
+|---|---|
+| Checkout | Fetches the four repositories at immutable commits from `projects.json` into `.projects/` |
+| Bicep | Creates shared AKS, ACR, model deployments, Foundry project, Search, monitoring and identities |
+| AKS Ops | Builds the actual agent image, imports the demo image, deploys a healthy payments workload and both agents; waits for rollouts |
+| RAG | Indexes the source repo's demo documents, creates the knowledge base/MCP connection and agent version; checks a live grounded answer |
+| LangGraph | Runs real Azure inference for S01; checks that execution stops at human approval |
+| Monitor | Runs the actual monitor CLI in batch mode on telemetry reconstructed from the real CI evidence |
 
-Bicep is free; you pay for the resources. The main running costs are the AKS node, Azure AI Search (`basic` tier and up) and model tokens. Most other items are small or usage-based. Check the Azure pricing calculator for your region, and delete the resource group when you are not testing.
+The monitor currently receives the CI outcome, validation and escalation events.
+It does **not** continuously monitor all agents. Reconstructed event ordering is
+labelled; token costs, raw tool calls and latency are not invented. The placeholder
+Container Apps job is disabled in the full profile because it does not run this
+monitor. Continuous collection from AKS/Foundry remains separate follow-up work.
 
-## Before the first deploy
+A CI run awaiting human approval is the intended ready state, not an automatically
+approved repair. No PR is created. AKS startup does not inject failures or run S01–S10.
 
-- **Model availability and quota** vary by region and subscription. Adjust `modelDeployments` (name, version, capacity) if the deployment is rejected.
-- **AKS VM size** (`aksVmSize`, default `Standard_D4s_v5`) must be available in your region and quota.
-- **Globally unique names** (ACR, AI account, Search) get a suffix from the resource group id.
-- Deleted AI accounts are soft-deleted and keep their name; see the note in `scripts/teardown.ps1`.
-- Search is created with RBAC **and** API keys enabled (`aadOrApiKey`) for compatibility; set `disableLocalAuth: true` in `modules/search.bicep` once your RAG client uses Entra ID only.
+`status.ps1` checks the RG and current AKS rollouts, then displays the separate
+startup reports. RAG/CI/monitor reports describe their last execution, not live health.
 
-## Status
+## Separate reports and reproducibility
 
-- Bicep build and lint passed locally; both parameter files compile. CI also checks PowerShell syntax. No live deployment has been performed.
-- **Not deployed against a real subscription**, so `what-if` and a real deployment may still surface region, quota or API-version issues.
-- The monitor job runs a placeholder image until you push an `agent-monitor` image and set `monitorImage` (+ `monitorImageFromAcr=true`).
-- The monitor currently reads JSONL files; reading telemetry from Log Analytics (what its Reader role is for) is a planned adapter, not built yet.
-- Foundry Knowledge Base / MCP connection setup is not in Bicep; configure it in the Foundry project after deployment.
+Each invocation writes separate reports under:
 
-## Responsibility boundary
+```text
+.state/<subscription>-<resource-group>/reports/<run>/
+  ops/startup.json
+  rag/startup.json
+  rag/answer.txt
+  ci/startup.json
+  ci/<thread>/evidence.json
+  monitor/startup.json
+  monitor/events.jsonl
+  monitor/findings.json
+```
 
-This repository provisions infrastructure only. Build, deploy and test each agent
-using its own repository scripts, configured to reuse these resources rather than
-create duplicates. `outputs.json` provides endpoints, identity client IDs, the chat
-deployment name, service account names and the Application Insights connection string.
-Keep individual test reports in each agent repository.
+Configuration and an isolated kubeconfig are retained beside the reports. Each
+Python project has its own `.venvs/` environment. Update a commit in `projects.json`
+only after checking its adapter contract. Dirty platform checkouts are refused.
+Reports/state/checkouts/environments are git-ignored. Keep local state until teardown.
 
-Local LangGraph execution must use the developer's Entra identity with appropriate
-model access, or a separately configured federation. Creating its managed identity
-here does not authenticate a local process. Foundry connections and telemetry
-instrumentation remain the responsibility of the agent projects.
+On failure, up stops and retains cloud resources and reports for inspection. Retry
+up with the same parameters or run down. A failed project prevents later projects
+from being reported as ready. Setup routines reuse resources; a retry can create
+another Foundry agent version and a new CI thread/report.
 
-The default monitor image is a placeholder; deploying the job does not demonstrate
-that agent monitoring works. Supply a real image and telemetry adapter first.
+## Independent repo use
 
-Teardown waits for deletion and checks recorded AKS node groups. An initial Network
-Watcher inventory is retained in `.state/` per subscription/resource group, including
-across retries. Newly observed watchers are reported for ownership review, never
-blindly removed because they may be shared. Keep this local state until cleanup is
-complete. The script refuses to reuse an existing untagged resource group.
+The original repository entrypoints still work on their own. Do not invoke their
+standalone infrastructure setup scripts against the shared platform: those create
+dedicated labs. The platform adapters use the pinned application entrypoints and
+manifests without creating additional Azure infrastructure.
+
+| Application | Platform integration |
+|---|---|
+| AKS Ops | `scripts/adapters/ops.ps1` + upstream Dockerfile/manifests |
+| Foundry RAG | `scripts/adapters/rag.py` + upstream create/chat commands and Azure helpers |
+| CI Repair | upstream `python -m ci_repair.cli run --mode azure` |
+| Monitor | upstream `python -m agent_monitor analyze` + `scripts/adapters/telemetry.py` |
+
+## Infrastructure-only use
+
+```powershell
+./scripts/deploy.ps1 -ResourceGroup rg-agents-min -ParamFile minimal.bicepparam
+./scripts/teardown.ps1 -ResourceGroup rg-agents-min
+```
+
+Full `up.ps1` deliberately uses `dev.bicepparam`; partial profiles are for the
+infrastructure-only command. For custom full settings, edit `dev.bicepparam`.
+
+## Identity and cleanup
+
+- Diagnostic and remediation use separate Workload Identities and upstream
+  namespace-scoped Kubernetes roles. The full up skips the broader generic RBAC.
+- Local RAG and CI clients use Azure CLI authentication. Bicep grants the signed-in
+  operator scoped model/AI and Search bootstrap roles. Managed identity creation
+  alone does not authenticate local applications.
+- RAG's Foundry project identity gets Search Index Data Reader for the MCP connection.
+- Model API keys are disabled; Search retains its existing RBAC/API-key compatibility.
+- Down waits for RG deletion, verifies recorded AKS node groups and reports new
+  Network Watchers from the saved inventory. Shared watchers are never blindly deleted.
+- AI soft-delete retention can reserve names after deletion. Review/purge a specific
+  deleted account before recreating the same name, or use a new resource group.
+- No local background processes are started: AKS workloads and the Foundry agent
+  persist in Azure; local RAG/CI/monitor commands complete before up returns.
+
+AKS nodes, Search, ACR and observability can incur charges while retained; model
+calls also consume quota/billing. Down affects the selected platform RG, not
+independent labs created from other repositories.
+
+## Validation
+
+Bicep build/lint and both parameter builds are checked in CI, alongside PowerShell
+syntax and offline orchestration tests. No live Azure deployment has been performed
+as part of implementing this orchestration. A successful compile is not evidence
+of live API availability, identity propagation or model quota.

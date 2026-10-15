@@ -1,3 +1,5 @@
+param operatorPrincipalId string = ''
+param operatorPrincipalType string = 'User'
 @description('Lowercase service name, 2-60 chars, globally unique.')
 param name string
 param location string
@@ -17,7 +19,7 @@ var indexDataReaderRole = '1407120a-92aa-4202-b7e9-c0e197c71c8f'
 var indexDataContributorRole = '8ebe5a00-799e-43f5-93ac-243d3dce84a7'
 var serviceContributorRole = '7ca78c08-252a-4471-8644-bb5ff32d4ba0'
 
-resource search 'Microsoft.Search/searchServices@2025-05-01' = {
+resource search 'Microsoft.Search/searchServices@2026-03-01-preview' = {
   name: name
   location: location
   tags: tags
@@ -29,6 +31,7 @@ resource search 'Microsoft.Search/searchServices@2025-05-01' = {
     hostingMode: 'Default'
     publicNetworkAccess: 'enabled'
     semanticSearch: sku == 'free' ? 'disabled' : 'free'
+    knowledgeRetrieval: 'free'
     disableLocalAuth: false
     authOptions: {
       aadOrApiKey: { aadAuthFailureMode: 'http401WithBearerChallenge' }
@@ -42,7 +45,7 @@ resource readers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', indexDataReaderRole)
     principalId: pid
-    principalType: 'ServicePrincipal'
+    principalType: pid == operatorPrincipalId ? operatorPrincipalType : 'ServicePrincipal'
   }
 }]
 
@@ -52,7 +55,7 @@ resource indexContributors 'Microsoft.Authorization/roleAssignments@2022-04-01' 
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', indexDataContributorRole)
     principalId: pid
-    principalType: 'ServicePrincipal'
+    principalType: pid == operatorPrincipalId ? operatorPrincipalType : 'ServicePrincipal'
   }
 }]
 
@@ -62,7 +65,7 @@ resource serviceContributors 'Microsoft.Authorization/roleAssignments@2022-04-01
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', serviceContributorRole)
     principalId: pid
-    principalType: 'ServicePrincipal'
+    principalType: pid == operatorPrincipalId ? operatorPrincipalType : 'ServicePrincipal'
   }
 }]
 

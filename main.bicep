@@ -13,6 +13,11 @@ targetScope = 'resourceGroup'
 @maxLength(10)
 param prefix string
 
+@description('Signed-in operator object ID for local RAG and CI clients. Empty for infrastructure-only deployment.')
+param operatorPrincipalId string = ''
+@allowed(['User', 'ServicePrincipal'])
+param operatorPrincipalType string = 'User'
+
 param location string = resourceGroup().location
 param tags object = {
   workload: 'agents-test'
@@ -53,9 +58,9 @@ param ragCanManageIndex bool = true
 // ---- AKS ---------------------------------------------------------------
 param aksNodeCount int = 1
 param aksVmSize string = 'Standard_D4s_v5'
-param agentsNamespace string = 'agents'
-param diagnosticServiceAccount string = 'diagnostic-agent'
-param remediationServiceAccount string = 'remediation-agent'
+param agentsNamespace string = 'agentic-ops'
+param diagnosticServiceAccount string = 'agentic-ops-diagnostic'
+param remediationServiceAccount string = 'agentic-ops-remediation'
 
 // ---- Monitor job -------------------------------------------------------
 param monitorImage string = 'mcr.microsoft.com/k8se/quickstart-jobs:latest'
@@ -127,7 +132,9 @@ module search 'modules/search.bicep' = if (deployRag) {
     tags: tags
     sku: searchSku
     readerPrincipalIds: ragCanManageIndex ? [] : [ idRag.outputs.principalId ]
-    contributorPrincipalIds: ragCanManageIndex ? [ idRag.outputs.principalId ] : []
+    contributorPrincipalIds: concat(ragCanManageIndex ? [ idRag.outputs.principalId ] : [], empty(operatorPrincipalId) ? [] : [operatorPrincipalId])
+    operatorPrincipalId: operatorPrincipalId
+    operatorPrincipalType: operatorPrincipalType
   }
 }
 
@@ -147,8 +154,10 @@ module ai 'modules/ai.bicep' = if (deployAi) {
       idRag.outputs.principalId
       idCiRepair.outputs.principalId
       idMonitor.outputs.principalId
-    ], deployRag ? [ search!.outputs.principalId ] : [])
-    aiUserPrincipalIds: [ idRag.outputs.principalId ]
+    ], deployRag ? [ search!.outputs.principalId ] : [], empty(operatorPrincipalId) ? [] : [operatorPrincipalId])
+    aiUserPrincipalIds: concat([ idRag.outputs.principalId ], empty(operatorPrincipalId) ? [] : [operatorPrincipalId])
+    operatorPrincipalId: operatorPrincipalId
+    operatorPrincipalType: operatorPrincipalType
   }
 }
 
@@ -226,3 +235,8 @@ output diagnosticServiceAccount string = diagnosticServiceAccount
 output remediationServiceAccount string = remediationServiceAccount
 output chatDeployment string = deployAi && length(modelDeployments) > 0 ? modelDeployments[0].name : ''
 output appInsightsConnectionString string = monitoring.outputs.connectionString
+
+output aiAccountName string = deployAi ? ai!.outputs.name : ''
+output aiAccountId string = deployAi ? ai!.outputs.id : ''
+output searchResourceId string = deployRag ? search!.outputs.id : ''
+output foundryProjectId string = deployAi ? ai!.outputs.projectId : ''

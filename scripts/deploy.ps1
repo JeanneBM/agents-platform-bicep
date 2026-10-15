@@ -3,6 +3,9 @@ param(
     [Parameter(Mandatory)] [string] $ResourceGroup,
     [string] $Location = 'westeurope',
     [string] $ParamFile = 'dev.bicepparam',
+    [string] $OperatorPrincipalId = '',
+    [string] $OperatorPrincipalType = 'User',
+    [switch] $SkipKubernetesRbac,
     [switch] $Yes
 )
 . (Join-Path $PSScriptRoot 'common.ps1')
@@ -22,11 +25,12 @@ try {
     }
     Invoke-Az bicep build --file main.bicep --stdout | Out-Null
     Invoke-Az group create -n $ResourceGroup -l $Location --tags workload=agents-test | Out-Null
-    Invoke-Az deployment group what-if -g $ResourceGroup -p $ParamFile
-    if (-not $Yes -and (Read-Host 'Apply this deployment? (y/N)') -ne 'y') { return }
-    $out = Invoke-Az deployment group create -g $ResourceGroup -p $ParamFile --query properties.outputs -o json | ConvertFrom-Json
+    $operatorArgs = @("operatorPrincipalId=$OperatorPrincipalId", "operatorPrincipalType=$OperatorPrincipalType")
+    Invoke-Az deployment group what-if -g $ResourceGroup -p $ParamFile @operatorArgs
+    if (-not $Yes -and (Read-Host 'Apply this deployment? (y/N)') -ne 'y') { throw 'Deployment cancelled.' }
+    $out = Invoke-Az deployment group create -g $ResourceGroup -p $ParamFile @operatorArgs --query properties.outputs -o json | ConvertFrom-Json
     $out | ConvertTo-Json -Depth 10 | Set-Content ./outputs.json
-    if ($out.aksName.value) {
+    if ($out.aksName.value -and -not $SkipKubernetesRbac) {
         Invoke-Az aks get-credentials -g $ResourceGroup -n $out.aksName.value --overwrite-existing | Out-Null
         $manifest = Get-Content ./k8s/agents-rbac.yaml -Raw
         $values = @{

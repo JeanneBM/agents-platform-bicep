@@ -35,6 +35,7 @@ resource aks 'Microsoft.ContainerService/managedClusters@2025-05-01' = {
     networkProfile: {
       networkPlugin: 'azure'
       networkPluginMode: 'overlay'
+      networkDataplane: 'cilium'
     }
     // Workload Identity: pods authenticate as managed identities, no secrets.
     oidcIssuerProfile: { enabled: true }

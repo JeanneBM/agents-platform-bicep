@@ -3,3 +3,7 @@ outputs.json
 main.json
 
 .state/
+
+.projects/
+.venvs/
+__pycache__/

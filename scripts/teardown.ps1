@@ -1,12 +1,12 @@
 #Requires -Version 7
-param([Parameter(Mandatory)] [string] $ResourceGroup)
+param([Parameter(Mandatory)] [string] $ResourceGroup, [switch] $Yes)
 . (Join-Path $PSScriptRoot 'common.ps1')
 $statePath = Get-StatePath $ResourceGroup
 $exists = Invoke-Az group exists -n $ResourceGroup -o tsv
 if ($exists -eq 'true') {
     $tag = Invoke-Az group show -n $ResourceGroup --query tags.workload -o tsv
     if ($tag -ne 'agents-test') { throw 'Refusing: resource group is not tagged workload=agents-test.' }
-    if ((Read-Host "Delete '$ResourceGroup' and its infrastructure? (y/N)") -ne 'y') { return }
+    if (-not $Yes -and (Read-Host "Delete '$ResourceGroup' and its infrastructure? (y/N)") -ne 'y') { return }
     # Retain the actual AKS node resource groups for post-deletion verification.
     $nodeGroups = @(Invoke-Az aks list -g $ResourceGroup --query '[].nodeResourceGroup' -o json | ConvertFrom-Json)
     @{ nodeGroups = $nodeGroups } | ConvertTo-Json | Set-Content "$statePath.cleanup"

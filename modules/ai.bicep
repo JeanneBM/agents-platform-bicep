@@ -1,3 +1,5 @@
+param operatorPrincipalId string = ''
+param operatorPrincipalType string = 'User'
 @description('Account name; also the custom subdomain, so it must be globally unique.')
 @maxLength(64)
 param name string
@@ -70,7 +72,7 @@ resource openAiUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', openAiUserRole)
     principalId: pid
-    principalType: 'ServicePrincipal'
+    principalType: pid == operatorPrincipalId ? operatorPrincipalType : 'ServicePrincipal'
   }
 }]
 
@@ -80,7 +82,7 @@ resource aiUsers 'Microsoft.Authorization/roleAssignments@2022-04-01' = [for pid
   properties: {
     roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', azureAiUserRole)
     principalId: pid
-    principalType: 'ServicePrincipal'
+    principalType: pid == operatorPrincipalId ? operatorPrincipalType : 'ServicePrincipal'
   }
 }]
 
@@ -89,3 +91,5 @@ output name string = account.name
 output endpoint string = account.properties.endpoint
 output openAiEndpoint string = 'https://${name}.openai.azure.com/'
 output projectName string = deployFoundryProject ? project.name : ''
+
+output projectId string = deployFoundryProject ? project.id : ''
