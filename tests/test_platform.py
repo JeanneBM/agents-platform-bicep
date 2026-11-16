@@ -125,6 +125,46 @@ class PlatformTests(unittest.TestCase):
             kube=json.loads((directory/'monitor-kubeconfig.json').read_text())
             self.assertEqual(kube['users'][0]['user'],{'token':token})
 
+    def test_preflight_reads_model_and_vm_from_param_file(self):
+        self.assertEqual(platform.bicepparam('dev.bicepparam', 'chatModel'), 'gpt-4.1-mini')
+        self.assertEqual(platform.bicepparam('dev.bicepparam', 'chatModelVersion'), '2025-04-14')
+        self.assertEqual(platform.bicepparam('dev.bicepparam', 'aksVmSize'), 'Standard_D2as_v4')
+        self.assertEqual(platform.bicepparam('dev.bicepparam', 'aiLocation'), 'swedencentral')
+        self.assertIsNone(platform.bicepparam('dev.bicepparam', 'missing'))
+        self.assertEqual(platform.version_tuple('2.78.0'), (2, 78, 0))
+        self.assertLess(platform.version_tuple('2.60.1'), platform.MIN_AZ_VERSION)
+
+    def test_preflight_runs_before_any_deployment(self):
+        order = []
+        with patch.object(platform, 'az', return_value={'id': 'sub'}), \
+             patch.object(platform, 'operator', return_value=('oid', 'User')), \
+             patch.object(platform, 'preflight', side_effect=lambda *a: order.append('preflight')), \
+             patch.object(platform, 'checkout', side_effect=RuntimeError('stop after preflight')):
+            args = type('A', (), {'params': 'dev.bicepparam', 'group': 'rg', 'location': 'polandcentral',
+                                  'ai_location': 'swedencentral', 'yes': True})()
+            with self.assertRaises(RuntimeError):
+                platform.up(args)
+        self.assertEqual(order, ['preflight'])
+
+    def test_checkout_follows_renamed_upstream_but_not_foreign_origin(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            calls = []
+            def fake_run(argv, *, cwd=None, capture=False, **kwargs):
+                argv = [str(x) for x in argv]
+                calls.append(argv)
+                if argv[1:3] == ['remote', 'get-url']:
+                    return 'https://github.com/JeanneBM/azure-foundry-rag-agent.git'
+                return ''
+            with patch.object(platform, 'ROOT', Path(tmp)), patch.object(platform, 'run', side_effect=fake_run):
+                (Path(tmp) / '.projects/rag').mkdir(parents=True)
+                platform.checkout('rag', {'repository': 'JeanneBM/azure-foundry-rag-assistant', 'ref': 'a' * 40})
+            self.assertIn(['git', 'remote', 'set-url', 'origin', 'https://github.com/JeanneBM/azure-foundry-rag-assistant.git'], calls)
+            def foreign(argv, *, cwd=None, capture=False, **kwargs):
+                return 'https://github.com/someone-else/repo.git' if 'get-url' in argv else ''
+            with patch.object(platform, 'ROOT', Path(tmp)), patch.object(platform, 'run', side_effect=foreign):
+                with self.assertRaises(RuntimeError):
+                    platform.checkout('rag', {'repository': 'JeanneBM/azure-foundry-rag-assistant', 'ref': 'a' * 40})
+
     def test_pins_are_immutable_and_all_components_present(self):
         projects = json.loads((ROOT / 'projects.json').read_text())
         self.assertEqual(set(projects), {'ops','rag','ci','monitor'})

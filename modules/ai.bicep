@@ -22,6 +22,7 @@ var openAiUserRole = '5e0bd9bd-7b93-4f28-af87-19fc36ad61bd'
 var azureAiUserRole = '53ca6127-db72-4b80-b1b0-d745d6d5456d'
 
 // One AIServices account hosts both the OpenAI model deployments and Foundry projects.
+// Soft-delete: a deleted account reserves its name; teardown.ps1 purges it.
 resource account 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   name: name
   location: location
@@ -91,5 +92,5 @@ output name string = account.name
 output endpoint string = account.properties.endpoint
 output openAiEndpoint string = 'https://${name}.openai.azure.com/'
 output projectName string = deployFoundryProject ? project.name : ''
-
 output projectId string = deployFoundryProject ? project.id : ''
+output projectPrincipalId string = deployFoundryProject ? project!.identity.principalId : ''

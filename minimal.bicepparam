@@ -2,6 +2,7 @@ using 'main.bicep'
 
 // Cheap bench: shared resources, models and the monitor job. No AKS, no Search.
 param prefix = 'agmin'
+param aiLocation = 'swedencentral'
 
 param deployAcr = false
 param deployAi = true

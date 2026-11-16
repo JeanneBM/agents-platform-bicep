@@ -1,7 +1,8 @@
 #Requires -Version 7
 param(
     [Parameter(Mandatory)] [string] $ResourceGroup,
-    [string] $Location = 'westeurope',
+    [string] $Location = 'polandcentral',
+    [string] $AiLocation = '',
     [string] $ParamFile = 'dev.bicepparam',
     [string] $OperatorPrincipalId = '',
     [string] $OperatorPrincipalType = 'User',
@@ -25,11 +26,24 @@ try {
     }
     Invoke-Az bicep build --file main.bicep --stdout | Out-Null
     Invoke-Az group create -n $ResourceGroup -l $Location --tags workload=agents-test | Out-Null
-    $operatorArgs = @("operatorPrincipalId=$OperatorPrincipalId", "operatorPrincipalType=$OperatorPrincipalType")
-    Invoke-Az deployment group what-if -g $ResourceGroup -p $ParamFile @operatorArgs
+    # Inline overrides take precedence over the .bicepparam values (documented az behaviour).
+    $overrides = @('-p', "operatorPrincipalId=$OperatorPrincipalId", '-p', "operatorPrincipalType=$OperatorPrincipalType")
+    if ($AiLocation) { $overrides += @('-p', "aiLocation=$AiLocation") }
+    # what-if is advisory: preview resource providers occasionally reject it even
+    # though the deployment itself succeeds, so a what-if failure never blocks up.
+    try {
+        Invoke-Az deployment group what-if -g $ResourceGroup -p $ParamFile @overrides
+    } catch {
+        Write-Warning "what-if preview unavailable: $($_.Exception.Message)"
+    }
     if (-not $Yes -and (Read-Host 'Apply this deployment? (y/N)') -ne 'y') { throw 'Deployment cancelled.' }
-    $out = Invoke-Az deployment group create -g $ResourceGroup -p $ParamFile @operatorArgs --query properties.outputs -o json | ConvertFrom-Json
+    $deployment = "agents-platform-$(Get-Date -Format yyyyMMddHHmmss)"
+    $out = Invoke-Az deployment group create -g $ResourceGroup -n $deployment -p $ParamFile @overrides --query properties.outputs -o json | ConvertFrom-Json
     $out | ConvertTo-Json -Depth 10 | Set-Content ./outputs.json
+    # Record soft-delete-capable accounts so teardown can purge the reserved names.
+    $state = Get-Content $statePath -Raw | ConvertFrom-Json -AsHashtable
+    $state['aiAccounts'] = @(Invoke-Az cognitiveservices account list -g $ResourceGroup --query '[].{name:name,location:location}' -o json | ConvertFrom-Json -AsHashtable)
+    $state | ConvertTo-Json -Depth 10 | Set-Content $statePath
     if ($out.aksName.value -and -not $SkipKubernetesRbac) {
         Invoke-Az aks get-credentials -g $ResourceGroup -n $out.aksName.value --overwrite-existing | Out-Null
         $manifest = Get-Content ./k8s/agents-rbac.yaml -Raw
