@@ -7,9 +7,13 @@ def main():
     parser.add_argument('--repo', required=True)
     parser.add_argument('--config', required=True)
     args = parser.parse_args()
-    global ROOT, SEARCH_API, CONNECTION_API
+    global ROOT, SEARCH_API, MCP_API, CONNECTION_API
     ROOT = Path(args.repo).resolve()
+    # Mirrors the pinned repository's scripts/lab.py (validated live): GA Search
+    # API for index/knowledge source, preview API for the knowledge base so that
+    # retrievalReasoningEffort=minimal (no KB model) and the MCP endpoint work.
     SEARCH_API = '2026-04-01'
+    MCP_API = '2026-08-01-preview'
     CONNECTION_API = '2025-10-01-preview'
     sys.path.insert(0, str(ROOT / 'scripts'))
     from lab_support import request, grant, az, LabError
@@ -19,7 +23,11 @@ def main():
     project = az('cognitiveservices', 'account', 'project', 'show', '-g', config['resourceGroup'],
                  '-n', config['aiAccountName'], '--project-name', config['foundryProject'],
                  subscription=config['subscriptionId'])
-    principal = project['identity']['principalId']
+    principal = (project.get('identity') or {}).get('principalId')
+    if not principal:
+        raise LabError('Foundry project has no system identity; inspect the AI account and rerun up.')
+    # Bicep already assigned Search Index Data Reader to the project identity;
+    # this idempotent grant only covers a project recreated outside the platform.
     grant(state, principal, 'Search Index Data Reader', config['searchResourceId'])
     print("[3/5] Index and synthetic documents")
     index = {
@@ -66,13 +74,20 @@ def main():
     request(
         state, f"{endpoint}/knowledgesources('demo-source')?api-version={SEARCH_API}", "PUT", source
     )
+    # Preview defaults to low reasoning, which requires a model on the knowledge
+    # base. The lab uses Search-only retrieval and generates answers in Foundry.
     request(
         state,
-        f"{endpoint}/knowledgebases('demo-kb')?api-version={SEARCH_API}",
+        f"{endpoint}/knowledgebases('demo-kb')?api-version={MCP_API}",
         "PUT",
-        {"name": "demo-kb", "knowledgeSources": [{"name": "demo-source"}]},
+        {
+            "name": "demo-kb",
+            "knowledgeSources": [{"name": "demo-source"}],
+            "retrievalReasoningEffort": {"kind": "minimal"},
+            "outputMode": "extractiveData",
+        },
     )
-    mcp = f"{endpoint}/knowledgebases/demo-kb/mcp?api-version={SEARCH_API}"
+    mcp = f"{endpoint}/knowledgebases/demo-kb/mcp?api-version={MCP_API}"
     request(
         state,
         f"https://management.azure.com{project['id']}/connections/demo-kb-mcp?api-version={CONNECTION_API}",
@@ -97,9 +112,10 @@ def main():
         'MODEL_DEPLOYMENT': config['chatDeployment'], 'AGENT_NAME': 'PlatformRag',
         'AGENT_VERSION': '', 'AZURE_CREDENTIAL_MODE': 'cli',
         'DEPLOYMENT_FILE': str(Path(args.config).parent / 'rag-deployment.json'),
+        'AZURE_CLI_SUBSCRIPTION': config['subscriptionId'],
     })
     keys = ('PROJECT_ENDPOINT', 'RAG_MCP_ENDPOINT', 'PROJECT_CONNECTION_NAME', 'MODEL_DEPLOYMENT',
-            'AGENT_NAME', 'AGENT_VERSION', 'AZURE_CREDENTIAL_MODE', 'DEPLOYMENT_FILE')
+            'AGENT_NAME', 'AGENT_VERSION', 'AZURE_CREDENTIAL_MODE', 'DEPLOYMENT_FILE', 'AZURE_CLI_SUBSCRIPTION')
     (Path(args.config).parent / 'rag-environment.json').write_text(json.dumps({key: env[key] for key in keys}))
     for key in ('AZURE_CLIENT_ID', 'AZURE_OPENAI_API_KEY'):
         env.pop(key, None)

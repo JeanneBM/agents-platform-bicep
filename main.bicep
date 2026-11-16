@@ -6,6 +6,10 @@
 // Every component has a deploy* switch so the same template builds the full
 // test bench or a cheap minimal one. Everything lives in one resource group:
 // Teardown verifies deletion and reports external resources.
+//
+// Local clients (RAG, CI) authenticate as the signed-in operator through Azure
+// CLI, so only the identities that actually run in Azure are created here:
+// diagnostic, remediation (AKS workload identity) and monitor (optional job).
 targetScope = 'resourceGroup'
 
 @description('Short lowercase prefix used in resource names (3-10 chars, letters/digits).')
@@ -18,7 +22,10 @@ param operatorPrincipalId string = ''
 @allowed(['User', 'ServicePrincipal'])
 param operatorPrincipalType string = 'User'
 
+@description('Region for AKS, ACR, monitoring and the optional Container Apps job.')
 param location string = resourceGroup().location
+@description('Region for the AI Services account (models, Foundry project) and Azure AI Search. Model and knowledge-retrieval availability differ per region.')
+param aiLocation string = location
 param tags object = {
   workload: 'agents-test'
   managedBy: 'bicep'
@@ -32,19 +39,18 @@ param deployAks bool = true
 param deployMonitor bool = true
 
 // ---- AI / models -------------------------------------------------------
-@description('Check model/version/SKU availability and quota for your region before deploying.')
+@description('Chat model used by every agent. gpt-4.1-mini 2025-04-14 is what the application repositories were validated against; it is deprecated (existing-customer access only, retirement 2027-04-14), so up.ps1 checks availability first.')
+param chatModel string = 'gpt-4.1-mini'
+param chatModelVersion string = '2025-04-14'
+@description('GlobalStandard capacity in thousands of tokens per minute.')
+param chatCapacity int = 10
+@description('Model deployments; the first entry is the chat deployment used by every agent.')
 param modelDeployments array = [
   {
     name: 'chat'
-    model: 'gpt-4o-mini'
-    version: '2024-07-18'
-    capacity: 10
-  }
-  {
-    name: 'embed'
-    model: 'text-embedding-3-small'
-    version: '1'
-    capacity: 10
+    model: chatModel
+    version: chatModelVersion
+    capacity: chatCapacity
   }
 ]
 param deployFoundryProject bool = true
@@ -52,12 +58,10 @@ param deployFoundryProject bool = true
 // ---- Search ------------------------------------------------------------
 @allowed([ 'free', 'basic', 'standard' ])
 param searchSku string = 'basic'
-@description('Give the RAG identity rights to create indexes (test convenience). false = query-only.')
-param ragCanManageIndex bool = true
 
 // ---- AKS ---------------------------------------------------------------
 param aksNodeCount int = 1
-param aksVmSize string = 'Standard_D4s_v5'
+param aksVmSize string = 'Standard_D2as_v4'
 param agentsNamespace string = 'agentic-ops'
 param diagnosticServiceAccount string = 'agentic-ops-diagnostic'
 param remediationServiceAccount string = 'agentic-ops-remediation'
@@ -71,9 +75,10 @@ param monitorTrigger string = 'Manual'
 param monitorCron string = '0 */6 * * *'
 
 var suffix = take(uniqueString(resourceGroup().id), 6)
-var base = prefix
+var base = toLower(prefix)
+var operatorIds = empty(operatorPrincipalId) ? [] : [ operatorPrincipalId ]
 
-// ---- identities: one per agent, least privilege ----------------------------
+// ---- identities: one per Azure-hosted agent, least privilege ---------------
 module idDiagnostic 'modules/identity.bicep' = {
   name: 'id-diagnostic'
   params: { name: '${base}-id-diagnostic', location: location, tags: tags }
@@ -81,14 +86,6 @@ module idDiagnostic 'modules/identity.bicep' = {
 module idRemediation 'modules/identity.bicep' = {
   name: 'id-remediation'
   params: { name: '${base}-id-remediation', location: location, tags: tags }
-}
-module idRag 'modules/identity.bicep' = {
-  name: 'id-rag'
-  params: { name: '${base}-id-rag', location: location, tags: tags }
-}
-module idCiRepair 'modules/identity.bicep' = {
-  name: 'id-ci-repair'
-  params: { name: '${base}-id-ci-repair', location: location, tags: tags }
 }
 module idMonitor 'modules/identity.bicep' = {
   name: 'id-monitor'
@@ -109,6 +106,7 @@ module monitoring 'modules/monitoring.bicep' = {
 
 // ---- registry ----------------------------------------------------------
 // Diagnostic, remediation and monitor identities get AcrPull (read) only.
+// The operator builds images with `az acr build`, which needs AcrPush.
 module acr 'modules/acr.bicep' = if (deployAcr) {
   name: 'acr'
   params: {
@@ -120,44 +118,57 @@ module acr 'modules/acr.bicep' = if (deployAcr) {
       idRemediation.outputs.principalId
       idMonitor.outputs.principalId
     ]
+    pushPrincipalIds: operatorIds
+    operatorPrincipalId: operatorPrincipalId
+    operatorPrincipalType: operatorPrincipalType
   }
 }
 
 // ---- search (RAG) ------------------------------------------------------
+// The operator creates the index, knowledge source and knowledge base; the
+// Foundry project identity only reads (assigned below, once the project exists).
 module search 'modules/search.bicep' = if (deployRag) {
   name: 'search'
   params: {
     name: toLower('${base}-search-${suffix}')
-    location: location
+    location: aiLocation
     tags: tags
     sku: searchSku
-    readerPrincipalIds: ragCanManageIndex ? [] : [ idRag.outputs.principalId ]
-    contributorPrincipalIds: concat(ragCanManageIndex ? [ idRag.outputs.principalId ] : [], empty(operatorPrincipalId) ? [] : [operatorPrincipalId])
+    readerPrincipalIds: []
+    contributorPrincipalIds: operatorIds
     operatorPrincipalId: operatorPrincipalId
     operatorPrincipalType: operatorPrincipalType
   }
 }
 
 // ---- models + Foundry --------------------------------------------------
-// Search's own identity needs model access for vectorization / Knowledge Base.
 module ai 'modules/ai.bicep' = if (deployAi) {
   name: 'ai'
   params: {
     name: toLower('${base}-ai-${suffix}')
-    location: location
+    location: aiLocation
     tags: tags
     deployments: modelDeployments
     deployFoundryProject: deployFoundryProject
     openAiUserPrincipalIds: concat([
       idDiagnostic.outputs.principalId
       idRemediation.outputs.principalId
-      idRag.outputs.principalId
-      idCiRepair.outputs.principalId
       idMonitor.outputs.principalId
-    ], deployRag ? [ search!.outputs.principalId ] : [], empty(operatorPrincipalId) ? [] : [operatorPrincipalId])
-    aiUserPrincipalIds: concat([ idRag.outputs.principalId ], empty(operatorPrincipalId) ? [] : [operatorPrincipalId])
+    ], operatorIds)
+    aiUserPrincipalIds: operatorIds
     operatorPrincipalId: operatorPrincipalId
     operatorPrincipalType: operatorPrincipalType
+  }
+}
+
+// The Foundry project's system identity queries the knowledge base over MCP.
+// Assigning the role here (instead of at runtime) gives RBAC time to propagate
+// before the first agent run.
+module ragProjectSearchReader 'modules/search-reader.bicep' = if (deployRag && deployAi && deployFoundryProject) {
+  name: 'rag-project-search-reader'
+  params: {
+    searchName: search!.outputs.name
+    principalId: ai!.outputs.projectPrincipalId
   }
 }
 
@@ -226,8 +237,6 @@ output logAnalyticsWorkspaceId string = monitoring.outputs.workspaceCustomerId
 output monitorJobName string = deployMonitor ? monitorJob!.outputs.jobName : ''
 output diagnosticClientId string = idDiagnostic.outputs.clientId
 output remediationClientId string = idRemediation.outputs.clientId
-output ragClientId string = idRag.outputs.clientId
-output ciRepairClientId string = idCiRepair.outputs.clientId
 output monitorClientId string = idMonitor.outputs.clientId
 
 output agentsNamespace string = agentsNamespace
@@ -238,5 +247,6 @@ output appInsightsConnectionString string = monitoring.outputs.connectionString
 
 output aiAccountName string = deployAi ? ai!.outputs.name : ''
 output aiAccountId string = deployAi ? ai!.outputs.id : ''
+output aiLocation string = aiLocation
 output searchResourceId string = deployRag ? search!.outputs.id : ''
 output foundryProjectId string = deployAi ? ai!.outputs.projectId : ''

@@ -9,10 +9,22 @@ function Kube {
     if ($LASTEXITCODE -ne 0) { throw "kubectl failed: $($args[0])" }
     return $result
 }
+function Invoke-Retry([string]$What, [int]$Attempts, [scriptblock]$Action) {
+    for ($i = 1; $i -le $Attempts; $i++) {
+        try { return (& $Action) } catch {
+            if ($i -eq $Attempts) { throw }
+            Write-Warning "$What failed (attempt $i/$Attempts): $($_.Exception.Message). Retrying in 30s; RBAC/registry propagation can lag."
+            Start-Sleep -Seconds 30
+        }
+    }
+}
 Invoke-Az aks get-credentials -g $c.resourceGroup -n $c.aksName --file $kubeconfig --overwrite-existing | Out-Null
 $registry = $c.acrLoginServer.Split('.')[0]
-Invoke-Az acr build --registry $registry --image 'agentic-ops:platform' $Repo | Out-Host
-Invoke-Az acr import --name $registry --source docker.io/library/nginx:1.27 --image test-app:1.4.2 --force | Out-Null
+# --no-logs: streamed build logs break on some Windows consoles (upstream fix); the
+# build result is still checked through the exit code. AcrPush for the operator is
+# assigned by Bicep and may take a few minutes to propagate, hence the retries.
+Invoke-Retry 'ACR build' 5 { Invoke-Az acr build --registry $registry --image 'agentic-ops:platform' --no-logs --only-show-errors $Repo | Out-Host }
+Invoke-Retry 'ACR import' 5 { Invoke-Az acr import --name $registry --source docker.io/library/nginx:1.27 --image test-app:1.4.2 --force --only-show-errors | Out-Null }
 foreach ($ns in @($c.agentsNamespace, 'test-app')) {
     "apiVersion: v1`nkind: Namespace`nmetadata:`n  name: $ns" | & kubectl --kubeconfig $kubeconfig apply -f - | Out-Host
     if ($LASTEXITCODE -ne 0) { throw 'Namespace apply failed.' }
@@ -59,9 +71,16 @@ foreach ($source in @('demo-test-app.yaml','aks-agentic-ops.yaml')) {
     Set-Content $file $manifest
     Kube apply -f $file | Out-Host
     if ($source -eq 'demo-test-app.yaml') {
-        Kube rollout status deployment/test-app -n test-app --timeout=300s | Out-Host
+        Kube rollout status deployment/test-app -n test-app --timeout=600s | Out-Host
     }
 }
 foreach ($role in @('remediation','diagnostic')) {
-    Kube rollout status "deployment/agentic-ops-$role" -n $c.agentsNamespace --timeout=300s | Out-Host
+    try {
+        Kube rollout status "deployment/agentic-ops-$role" -n $c.agentsNamespace --timeout=600s | Out-Host
+    } catch {
+        # Keep the diagnosis in the report instead of a bare timeout.
+        & kubectl --kubeconfig $kubeconfig get pods -n $c.agentsNamespace -l "role=$role" -o wide | Out-Host
+        & kubectl --kubeconfig $kubeconfig describe pods -n $c.agentsNamespace -l "role=$role" | Select-String -Pattern 'Warning|Error|BackOff|Failed' | Select-Object -First 10 | Out-Host
+        throw
+    }
 }

@@ -1,10 +1,12 @@
 # Agents Platform — one-command Azure lab
 
-> **Test workload:** `test-app` is a disposable nginx placeholder used only for fault injection and recovery checks. It has no business logic, payment processing, business data or extra backend. `tset-app` is the deliberately misspelled image alias used in the recovery scenario.
-
 A shared Azure test bench for AKS Agentic Ops, Foundry RAG, LangGraph CI Repair
 and the Observability Monitor. Bicep owns infrastructure; application adapters
 reuse those resources. Each source repository retains its independent lab scripts.
+
+`test-app` is a disposable nginx placeholder used only for fault injection and
+recovery checks; `tset-app` is the deliberately misspelled image alias used in
+the recovery scenario.
 
 ## Running agents
 
@@ -40,9 +42,11 @@ No monitoring arrow gives the monitor a remediation or approval capability.
 
 ## Up / status / down
 
-Requirements: Python 3.12+, PowerShell 7+, Git, Azure CLI with Bicep, kubectl,
-an Azure login and permission to deploy resources, build images in ACR and assign roles.
-Docker is not required locally: image builds run in ACR.
+Requirements: Python 3.12+, PowerShell 7+, Git, Azure CLI 2.77+ (Bicep is
+installed by the CLI on first use), kubectl 1.24+, an Azure login with Owner or
+User Access Administrator on the subscription (Bicep assigns roles), and
+permission to deploy resources and build images in ACR. Docker is not required
+locally: image builds run in ACR.
 
 ```powershell
 az login
@@ -52,17 +56,33 @@ az account set --subscription YOUR_SUBSCRIPTION_ID
 ./down.ps1 -Yes
 ```
 
-For a different dedicated resource group/region:
+Defaults: resource group `rg-agents-test`, AKS/ACR/monitoring in `polandcentral`,
+models, Foundry project and Search in `swedencentral`, chat model `gpt-4.1-mini`
+`2025-04-14` (GlobalStandard, 10K TPM), one `Standard_D2as_v4` node. These are
+the configurations the four application repositories were validated against.
+For a different dedicated resource group/regions:
 
 ```powershell
-./up.ps1 -ResourceGroup rg-agents-demo -Location westeurope -Yes
+./up.ps1 -ResourceGroup rg-agents-demo -Location westeurope -AiLocation swedencentral -Yes
 ./down.ps1 -ResourceGroup rg-agents-demo -Yes
 ```
 
 `-Yes` skips the confirmation prompt. Without it, deployment shows what-if and
-asks before applying. Region/model quotas can still reject a deployment. Set model
-and VM parameters in `dev.bicepparam` before the first run. RAG uses preview Search
-knowledge retrieval APIs, so region/API availability also matters.
+asks before applying. Model and VM parameters live in `dev.bicepparam`.
+
+### Preflight
+
+Before creating anything, `up.ps1` fails fast on the things a Bicep compile cannot
+check: Azure CLI/kubectl versions, unregistered resource providers (registered
+automatically), Owner/User Access Administrator for the signed-in principal,
+availability and SKU of the chat model in `-AiLocation`, VM size availability and
+family vCPU quota in `-Location`, and the one-free-Search-service limit.
+
+`gpt-4.1-mini` is in the *deprecated* lifecycle stage in Azure OpenAI: it is still
+deployable by subscriptions that have deployed that version before (this one has,
+through the application labs) and retires on 2027-04-14. New subscriptions should
+set `chatModel`/`chatModelVersion` in `dev.bicepparam` to a generally available
+model; note that the agents send `temperature: 0`, which gpt-5-family models reject.
 
 ## What one up does
 
@@ -153,14 +173,16 @@ infrastructure-only command. For custom full settings, edit `dev.bicepparam`.
 - Diagnostic and remediation use separate Workload Identities and upstream
   namespace-scoped Kubernetes roles. The full up skips the broader generic RBAC.
 - Local RAG and CI clients use Azure CLI authentication. Bicep grants the signed-in
-  operator scoped model/AI and Search bootstrap roles. Managed identity creation
-  alone does not authenticate local applications.
-- RAG's Foundry project identity gets Search Index Data Reader for the MCP connection.
+  operator scoped model/AI, Search bootstrap and AcrPush roles; no managed
+  identities are created for components that run on the platform host.
+- RAG's Foundry project identity gets Search Index Data Reader in Bicep, so the
+  assignment has propagated before the first agent run.
 - Model API keys are disabled; Search retains its existing RBAC/API-key compatibility.
 - Down waits for RG deletion, verifies recorded AKS node groups and reports new
   Network Watchers from the saved inventory. Shared watchers are never blindly deleted.
-- AI soft-delete retention can reserve names after deletion. Review/purge a specific
-  deleted account before recreating the same name, or use a new resource group.
+- AI Services accounts are soft-deleted and keep their name reserved. Because the
+  account name derives from the resource group, down purges the accounts it
+  created so that the next up with the same group does not collide.
 - A local monitor worker stays running after up. Down requests a cooperative stop
   before deleting Azure resources. RAG and CI client executions complete during up.
 
@@ -171,9 +193,11 @@ independent labs created from other repositories.
 ## Validation
 
 Bicep build/lint and both parameter builds are checked in CI, alongside PowerShell
-syntax and offline orchestration tests. No live Azure deployment has been performed
-as part of implementing this orchestration. A successful compile is not evidence
-of live API availability, identity propagation or model quota.
+syntax and offline orchestration tests. The pinned application commits are the
+ones whose own labs were run live against Azure (regions and model above); the
+platform adapters mirror those labs' API versions and payloads. The platform's
+own first live `up` is the remaining proof: a successful compile and preflight
+are not evidence of live API availability.
 
 ## Continuing monitored work
 
@@ -183,7 +207,7 @@ configuration and keep telemetry connected automatically:
 ```powershell
 ./chat.ps1
 ./chat.ps1 -Question 'What is the return period?'
-./ci.ps1 -Scenario S01
+./ci.ps1 -Scenario S01   # S01–S05
 ```
 
 For clients started manually from the pinned checkouts, set the same absolute
