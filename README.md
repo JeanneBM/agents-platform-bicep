@@ -192,6 +192,8 @@ independent labs created from other repositories.
 
 ## Validation
 
+**L0 validated on 16 November 2026.** See the [offline evidence and source pins](evidence/2026-11-16-L0.md). The shared Azure deployment awaits its first live validation.
+
 Bicep build/lint and both parameter builds are checked in CI, alongside PowerShell
 syntax and offline orchestration tests. The pinned application commits are the
 ones whose own labs were run live against Azure (regions and model above); the
